@@ -1,0 +1,15 @@
+Cloudflare Account Controls Terraform Provider
+Copyright 2026 terraform-provider-cloudflarecontrols contributors
+
+This project's source code is available under the Mozilla Public License,
+version 2.0. See LICENSE for the full text.
+
+Cloudflare and Terraform identify products with which this project interoperates.
+This is a community project. The respective product owners retain their rights.
+
+Release scripts and configuration are adapted from Terraform Provider for
+GitHub Settings, Copyright 2026 terraform-provider-githubsettings contributors,
+under the Mozilla Public License, version 2.0. The source is available at
+https://github.com/elephant-evergreen/terraform-provider-githubsettings/tree/5e2b72a.
+
+Dependency license notices are included in release archives.

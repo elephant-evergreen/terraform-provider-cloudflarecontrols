@@ -1,0 +1,42 @@
+---
+page_title: "{{ .Name }} Resource - {{ .ProviderName }}"
+description: |-
+{{ .Description | plainmarkdown | trimspace | prefixlines "  " }}
+---
+
+# {{ .Name }} (Resource)
+
+{{ .Description | trimspace }}
+
+## Set a spending threshold
+
+Use an account credential with **Account → Billing → Edit**. Import and
+refresh only need **Account → Billing → Read**.
+
+{{ tffile .ExampleFile }}
+
+Start with `notification` to receive alerts. To pause supported operations
+when the threshold is reached, set `action = "usage_block"`. Each product can
+have one enabled block across the account. The amount is in USD cents for the
+current subscription billing period. Metering delays and charges outside the
+policy can make the invoice exceed the threshold.
+[Cloudflare spending limits](https://developers.cloudflare.com/billing/manage/spend-management/)
+
+## Import an existing policy
+
+Use `cf billing spend-policies list` to find the policy ID, then inspect
+its settings in [the Cloudflare CLI](https://developers.cloudflare.com/billing/manage/spend-management/cli/#list-and-inspect-policies).
+Set the example arguments to match, then run:
+
+```sh
+terraform import cloudflarecontrols_spend_policy.workers_alert ACCOUNT_ID/POLICY_UUID
+terraform plan
+```
+
+Expect no changes. If an enabled block already exists, import its ID.
+If Cloudflare reports a version conflict, create a fresh plan and review the
+current settings. Deleting a policy releases any block it holds. Use a
+[removed block](https://developer.hashicorp.com/terraform/language/block/removed)
+with `destroy = false` to stop managing it while keeping the policy in Cloudflare.
+
+{{ .SchemaMarkdown | trimspace }}
