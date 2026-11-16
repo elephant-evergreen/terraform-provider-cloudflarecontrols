@@ -39,4 +39,11 @@ current settings. Deleting a policy releases any block it holds. Use a
 [removed block](https://developer.hashicorp.com/terraform/language/block/removed)
 with `destroy = false` to stop managing it while keeping the policy in Cloudflare.
 
+## Upgrade from 0.0.1-alpha.1
+
+Remove any references to the read-only `version` attribute, then run
+`terraform init -upgrade` and plan with refresh enabled. The provider keeps
+the policy ID and settings and refreshes the version it uses to detect
+concurrent edits.
+
 {{ .SchemaMarkdown | trimspace }}

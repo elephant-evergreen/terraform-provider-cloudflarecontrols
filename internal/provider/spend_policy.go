@@ -2,6 +2,7 @@ package provider
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/mail"
@@ -11,12 +12,14 @@ import (
 	cloudflare "github.com/cloudflare/cloudflare-go/v7"
 	"github.com/cloudflare/cloudflare-go/v7/billing"
 	"github.com/cloudflare/cloudflare-go/v7/option"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/hashicorp/terraform-plugin-go/tfprotov6"
 )
 
 type spendPolicyResource struct {
@@ -32,13 +35,15 @@ type spendPolicyModel struct {
 	Enabled           types.Bool   `tfsdk:"enabled"`
 	ThresholdCents    types.Int64  `tfsdk:"threshold_cents"`
 	NotificationEmail types.String `tfsdk:"notification_email"`
-	Version           types.Int64  `tfsdk:"version"`
 }
+
+const spendPolicyVersionKey = "version"
 
 var (
 	_ resource.ResourceWithConfigure      = (*spendPolicyResource)(nil)
 	_ resource.ResourceWithImportState    = (*spendPolicyResource)(nil)
 	_ resource.ResourceWithValidateConfig = (*spendPolicyResource)(nil)
+	_ resource.ResourceWithUpgradeState   = (*spendPolicyResource)(nil)
 )
 
 func newSpendPolicyResource() resource.Resource { return &spendPolicyResource{} }
@@ -49,6 +54,7 @@ func (*spendPolicyResource) Metadata(_ context.Context, req resource.MetadataReq
 
 func (*spendPolicyResource) Schema(_ context.Context, _ resource.SchemaRequest, resp *resource.SchemaResponse) {
 	resp.Schema = schema.Schema{
+		Version:     1,
 		Description: "Manage a spending limit or notification for Workers or Durable Objects. An enabled usage block can interrupt product operations across the account.",
 		Attributes: map[string]schema.Attribute{
 			"account_id":         schema.StringAttribute{Description: "Cloudflare account ID. Changing it replaces the policy.", Required: true, PlanModifiers: []planmodifier.String{stringplanmodifier.RequiresReplace()}},
@@ -59,9 +65,29 @@ func (*spendPolicyResource) Schema(_ context.Context, _ resource.SchemaRequest, 
 			"enabled":            schema.BoolAttribute{Description: "Whether Cloudflare evaluates the policy.", Required: true},
 			"threshold_cents":    schema.Int64Attribute{Description: "Positive spend threshold in USD cents. The period is the product billing period.", Required: true},
 			"notification_email": schema.StringAttribute{Description: "Bare recipient address. Required for notification.", Optional: true, Sensitive: true},
-			"version":            schema.Int64Attribute{Description: "Cloudflare's configuration version, used to detect concurrent edits.", Computed: true},
 		},
 	}
+}
+
+func (*spendPolicyResource) UpgradeState(context.Context) map[int64]resource.StateUpgrader {
+	return map[int64]resource.StateUpgrader{
+		0: {StateUpgrader: upgradeSpendPolicyState},
+	}
+}
+
+func upgradeSpendPolicyState(_ context.Context, req resource.UpgradeStateRequest, resp *resource.UpgradeStateResponse) {
+	var attributes map[string]json.RawMessage
+	if req.RawState == nil || json.Unmarshal(req.RawState.JSON, &attributes) != nil || attributes == nil {
+		resp.Diagnostics.AddError("Cannot upgrade spend policy state", "The prior spend policy state is not a JSON object.")
+		return
+	}
+	delete(attributes, "version")
+	value, err := json.Marshal(attributes)
+	if err != nil {
+		resp.Diagnostics.AddError("Cannot upgrade spend policy state", "The prior spend policy attributes could not be encoded.")
+		return
+	}
+	resp.DynamicValue = &tfprotov6.DynamicValue{JSON: value}
 }
 
 func (r *spendPolicyResource) Configure(_ context.Context, req resource.ConfigureRequest, resp *resource.ConfigureResponse) {
@@ -138,7 +164,8 @@ func (r *spendPolicyResource) Create(ctx context.Context, req resource.CreateReq
 		resp.Diagnostics.AddError("Incomplete spend policy response", "Check the account's existing policies before retrying creation.")
 		return
 	}
-	m.ID, m.Version = types.StringValue(out.ID), types.Int64Value(out.Version)
+	m.ID = types.StringValue(out.ID)
+	resp.Diagnostics.Append(resp.Private.SetKey(ctx, spendPolicyVersionKey, strconv.AppendInt(nil, out.Version, 10))...)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &m)...)
 }
 
@@ -170,7 +197,7 @@ func (r *spendPolicyResource) Read(ctx context.Context, req resource.ReadRequest
 	if out.NotificationEmail != "" {
 		m.NotificationEmail = types.StringValue(out.NotificationEmail)
 	}
-	m.Version = types.Int64Value(out.Version)
+	resp.Diagnostics.Append(resp.Private.SetKey(ctx, spendPolicyVersionKey, strconv.AppendInt(nil, out.Version, 10))...)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &m)...)
 }
 
@@ -181,8 +208,10 @@ func (r *spendPolicyResource) Update(ctx context.Context, req resource.UpdateReq
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	if state.Version.ValueInt64() < 1 {
-		resp.Diagnostics.AddError("Missing spend policy version", "Refresh the policy with a new plan and retry.")
+	rawVersion, diags := req.Private.GetKey(ctx, spendPolicyVersionKey)
+	resp.Diagnostics.Append(diags...)
+	version := spendPolicyVersion(rawVersion, &resp.Diagnostics)
+	if resp.Diagnostics.HasError() {
 		return
 	}
 	params := billing.SpendPolicyUpdateParams{
@@ -190,7 +219,7 @@ func (r *spendPolicyResource) Update(ctx context.Context, req resource.UpdateReq
 		ProductID: cloudflare.F(billing.SpendPolicyUpdateParamsProductID(plan.ProductID.ValueString())),
 		Action:    cloudflare.F(billing.SpendPolicyUpdateParamsAction(plan.Action.ValueString())),
 		Enabled:   cloudflare.F(plan.Enabled.ValueBool()), ThresholdCents: cloudflare.F(plan.ThresholdCents.ValueInt64()),
-		IfMatch: cloudflare.F(strconv.FormatInt(state.Version.ValueInt64(), 10)),
+		IfMatch: cloudflare.F(string(rawVersion)),
 	}
 	if known(plan.NotificationEmail) {
 		params.NotificationEmail = cloudflare.F(plan.NotificationEmail.ValueString())
@@ -200,11 +229,12 @@ func (r *spendPolicyResource) Update(ctx context.Context, req resource.UpdateReq
 		resp.Diagnostics.AddError("Could not update spend policy", spendPolicyError(err, false))
 		return
 	}
-	if out == nil || out.ID != state.ID.ValueString() || out.Version <= state.Version.ValueInt64() {
+	if out == nil || out.ID != state.ID.ValueString() || out.Version <= version {
 		resp.Diagnostics.AddError("Incomplete spend policy response", "Refresh the policy with a new plan before retrying.")
 		return
 	}
-	plan.ID, plan.Version = state.ID, types.Int64Value(out.Version)
+	plan.ID = state.ID
+	resp.Diagnostics.Append(resp.Private.SetKey(ctx, spendPolicyVersionKey, strconv.AppendInt(nil, out.Version, 10))...)
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
 
@@ -214,12 +244,14 @@ func (r *spendPolicyResource) Delete(ctx context.Context, req resource.DeleteReq
 	if resp.Diagnostics.HasError() {
 		return
 	}
-	if m.Version.ValueInt64() < 1 {
-		resp.Diagnostics.AddError("Missing spend policy version", "Refresh the policy with a new plan and retry.")
+	rawVersion, diags := req.Private.GetKey(ctx, spendPolicyVersionKey)
+	resp.Diagnostics.Append(diags...)
+	spendPolicyVersion(rawVersion, &resp.Diagnostics)
+	if resp.Diagnostics.HasError() {
 		return
 	}
 	out, err := r.api.Delete(ctx, m.ID.ValueString(), billing.SpendPolicyDeleteParams{
-		AccountID: cloudflare.F(m.AccountID.ValueString()), IfMatch: cloudflare.F(strconv.FormatInt(m.Version.ValueInt64(), 10)),
+		AccountID: cloudflare.F(m.AccountID.ValueString()), IfMatch: cloudflare.F(string(rawVersion)),
 	}, option.WithMaxRetries(0))
 	if statusCode(err) == http.StatusNotFound {
 		return
@@ -229,6 +261,14 @@ func (r *spendPolicyResource) Delete(ctx context.Context, req resource.DeleteReq
 	} else if out == nil || out.ID != m.ID.ValueString() {
 		resp.Diagnostics.AddError("Unconfirmed spend policy deletion", "Check the policy in Cloudflare before retrying.")
 	}
+}
+
+func spendPolicyVersion(raw []byte, diags *diag.Diagnostics) int64 {
+	version, err := strconv.ParseInt(string(raw), 10, 64)
+	if err != nil || version < 1 {
+		diags.AddError("Missing spend policy version", "Create a new plan with refresh enabled and retry.")
+	}
+	return version
 }
 
 func (*spendPolicyResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {

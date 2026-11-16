@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/hashicorp/terraform-plugin-framework/provider"
+	"github.com/hashicorp/terraform-plugin-framework/providerserver"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/tfsdk"
@@ -57,6 +59,22 @@ func checkRequest(t *testing.T, req *http.Request, method, path string) {
 	}
 }
 
+type spendFixtureProvider struct {
+	controlsProvider
+	client *client
+}
+
+func (p *spendFixtureProvider) Configure(_ context.Context, _ provider.ConfigureRequest, resp *provider.ConfigureResponse) {
+	resp.ResourceData = p.client
+}
+
+func requireProtocolSuccess(t *testing.T, err error, diagnostics []*tfprotov6.Diagnostic) {
+	t.Helper()
+	if err != nil || len(diagnostics) != 0 {
+		t.Fatalf("protocol request failed: %v, %v", err, diagnostics)
+	}
+}
+
 func TestSpendPolicyLifecycle(t *testing.T) {
 	t.Setenv("CLOUDFLARE_API_KEY", "unused")
 	t.Setenv("CLOUDFLARE_BASE_URL", "https://unexpected.example")
@@ -97,41 +115,70 @@ func TestSpendPolicyLifecycle(t *testing.T) {
 		}
 	}))
 
-	r := &spendPolicyResource{api: c.spend}
+	const resourceType = "cloudflarecontrols_spend_policy"
+	server := providerserver.NewProtocol6(&spendFixtureProvider{client: c})()
+	cfg, err := server.ConfigureProvider(ctx, &tfprotov6.ConfigureProviderRequest{
+		Config: &tfprotov6.DynamicValue{JSON: []byte(`{"api_token":null}`)},
+	})
+	requireProtocolSuccess(t, err, cfg.Diagnostics)
+
+	r := &spendPolicyResource{}
 	var sch resource.SchemaResponse
 	r.Schema(ctx, resource.SchemaRequest{}, &sch)
+	typ := sch.Schema.Type().TerraformType(ctx)
 	m := spendPolicyModel{AccountID: types.StringValue(testAccount), Name: types.StringValue("test cap"), ProductID: types.StringValue("workers"),
-		Action: types.StringValue("usage_block"), Enabled: types.BoolValue(true), ThresholdCents: types.Int64Value(2500)}
-	create := resource.CreateResponse{State: tfsdk.State{Schema: sch.Schema}}
-	r.Create(ctx, resource.CreateRequest{Plan: makePlan(t, sch.Schema, &m)}, &create)
-	if create.Diagnostics.HasError() {
-		t.Fatal(create.Diagnostics)
+		Action: types.StringValue("usage_block"), Enabled: types.BoolValue(true), ThresholdCents: types.Int64Value(2500),
+		ID: types.StringUnknown()}
+	makeDynamicPlan := func() *tfprotov6.DynamicValue {
+		t.Helper()
+		value, err := tfprotov6.NewDynamicValue(typ, makePlan(t, sch.Schema, &m).Raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return &value
 	}
-
-	read := resource.ReadResponse{State: create.State}
-	r.Read(ctx, resource.ReadRequest{State: create.State}, &read)
-	if read.Diagnostics.HasError() {
-		t.Fatal(read.Diagnostics)
+	empty := &tfprotov6.DynamicValue{JSON: []byte("null")}
+	create, err := server.ApplyResourceChange(ctx, &tfprotov6.ApplyResourceChangeRequest{
+		TypeName: resourceType, PriorState: empty, PlannedState: makeDynamicPlan(),
+	})
+	requireProtocolSuccess(t, err, create.Diagnostics)
+	if len(create.Private) == 0 {
+		t.Fatal("create did not retain version in private state")
 	}
-	read.State.Get(ctx, &m)
-	if m.Version.ValueInt64() != 2 {
-		t.Fatal("missing refreshed version")
+	legacy := fmt.Sprintf(`{"account_id":%q,"id":%q,"name":"test cap","product_id":"workers","action":"usage_block","enabled":true,"threshold_cents":2500,"notification_email":null,"version":1}`, testAccount, testPolicy)
+	upgrade, err := server.UpgradeResourceState(ctx, &tfprotov6.UpgradeResourceStateRequest{
+		TypeName: resourceType, RawState: &tfprotov6.RawState{JSON: []byte(legacy)},
+	})
+	requireProtocolSuccess(t, err, upgrade.Diagnostics)
+	raw, err := upgrade.UpgradedState.Unmarshal(typ)
+	if err != nil {
+		t.Fatal(err)
 	}
+	state := tfsdk.State{Schema: sch.Schema, Raw: raw}
+	if d := state.Get(ctx, &m); d.HasError() {
+		t.Fatal(d)
+	}
+	if m.ID.ValueString() != testPolicy || m.AccountID.ValueString() != testAccount || m.ThresholdCents.ValueInt64() != 2500 {
+		t.Fatal("state upgrade changed policy identity or settings")
+	}
+	read, err := server.ReadResource(ctx, &tfprotov6.ReadResourceRequest{TypeName: resourceType, CurrentState: upgrade.UpgradedState})
+	requireProtocolSuccess(t, err, read.Diagnostics)
 	m.ThresholdCents = types.Int64Value(3500)
-	updateReq := resource.UpdateRequest{State: read.State, Plan: makePlan(t, sch.Schema, &m)}
-	conflict := resource.UpdateResponse{State: read.State}
-	r.Update(ctx, updateReq, &conflict)
-	if !conflict.Diagnostics.HasError() || strings.Contains(fmt.Sprint(conflict.Diagnostics), issuedToken) || step != 3 {
+	updateReq := &tfprotov6.ApplyResourceChangeRequest{
+		TypeName: resourceType, PriorState: read.NewState, PlannedState: makeDynamicPlan(), PlannedPrivate: read.Private,
+	}
+	conflict, err := server.ApplyResourceChange(ctx, updateReq)
+	if err != nil || len(conflict.Diagnostics) != 1 || conflict.Diagnostics[0].Severity != tfprotov6.DiagnosticSeverityError ||
+		strings.Contains(conflict.Diagnostics[0].Detail, issuedToken) || step != 3 {
 		t.Fatal("unsafe conflict handling")
 	}
-	update := resource.UpdateResponse{State: read.State}
-	r.Update(ctx, updateReq, &update)
-	if update.Diagnostics.HasError() {
-		t.Fatal(update.Diagnostics)
-	}
-	var deleteResp resource.DeleteResponse
-	r.Delete(ctx, resource.DeleteRequest{State: update.State}, &deleteResp)
-	if deleteResp.Diagnostics.HasError() || step != 5 {
+	update, err := server.ApplyResourceChange(ctx, updateReq)
+	requireProtocolSuccess(t, err, update.Diagnostics)
+	deleted, err := server.ApplyResourceChange(ctx, &tfprotov6.ApplyResourceChangeRequest{
+		TypeName: resourceType, PriorState: update.NewState, PlannedState: empty, PlannedPrivate: update.Private,
+	})
+	requireProtocolSuccess(t, err, deleted.Diagnostics)
+	if step != 5 {
 		t.Fatal("delete failed or retried")
 	}
 }
