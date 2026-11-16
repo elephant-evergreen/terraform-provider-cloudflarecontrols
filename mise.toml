@@ -1,6 +1,6 @@
 [tools]
 go = "1.27.4"
-terraform = "1.17.1"
+terraform = "1.17.2"
 
 [tasks.docs]
 description = "Generate the Terraform Registry documentation."
