@@ -10,8 +10,8 @@ Manage Cloudflare spending policies and account-owned API tokens alongside the C
 
 ## Get started
 
-1. Open the [spend policy resource](https://registry.terraform.io/providers/elephant-evergreen/cloudflarecontrols/0.0.1-alpha.2/docs/resources/spend_policy) or
-   [account token resource](https://registry.terraform.io/providers/elephant-evergreen/cloudflarecontrols/0.0.1-alpha.2/docs/resources/account_token) and check its required
+1. Open the [spend policy resource](https://registry.terraform.io/providers/elephant-evergreen/cloudflarecontrols/latest/docs/resources/spend_policy) or
+   [account token resource](https://registry.terraform.io/providers/elephant-evergreen/cloudflarecontrols/latest/docs/resources/account_token) and check its required
    Cloudflare permissions. Use the account ID shown in the Cloudflare dashboard.
 2. Supply the API token through `CLOUDFLARE_API_TOKEN` in your Terraform
    environment. Keep it out of configuration files and shell history.
