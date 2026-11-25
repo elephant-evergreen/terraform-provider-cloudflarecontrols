@@ -7,12 +7,10 @@ issues, pull requests (including descriptions and comments), commit messages,
 and release notes must not contain:
 
 - private repository names or internal project names;
-- hostnames, LAN addresses, or SSIDs;
+- credentials, account or zone identifiers, API tokens, Terraform state, or saved plans;
 - per-device update or verification history.
 
-Use synthetic values in examples and fixtures. When an example or fixture
-needs a network address, use one from the RFC 5737 documentation ranges, such
-as `192.0.2.10`.
+Use synthetic values in examples and fixtures.
 
 Document supported and tested versions in their own section. Keep per-device
 update and verification history out of public content.
