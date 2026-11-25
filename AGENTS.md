@@ -1,6 +1,7 @@
 # Repository instructions
 
 - Write public documentation, examples, diagnostics, and commit messages in English.
+- Follow the [public information rules](CONTRIBUTING.md#public-information) for public content.
 - Use Go, the Terraform Plugin Framework, and the Cloudflare Go SDK. Run `mise run check` before publication.
 - Keep test identities synthetic. Ordinary tests use fixtures and never change a Cloudflare account.
 - Keep credentials, state, saved plans, and machine-specific paths out of commits and logs.
