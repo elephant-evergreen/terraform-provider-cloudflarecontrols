@@ -15,10 +15,12 @@ description: |-
 2. Authenticate Terraform with **Account → Account API Tokens → Edit**
    (`Account API Tokens Write` in the API). The issuing identity also needs
    the permissions it intends to grant.
-3. Look up the **DNS Read** group ID in the account-scoped permission groups
-   endpoint. Replace the synthetic account, permission group, and zone IDs
-   below and choose an expiration.
-[Cloudflare permission and scope reference](https://developers.cloudflare.com/fundamentals/api/how-to/create-via-api/)
+3. Find the ID of the **DNS Read** permission group with the [List Permission Groups](https://developers.cloudflare.com/api/resources/accounts/subresources/tokens/subresources/permission_groups/methods/list/)
+   endpoint (`GET accounts/{account_id}/tokens/permission_groups`). Replace the
+   synthetic account, permission group, and zone IDs below and choose an
+   expiration.
+
+See the [Cloudflare permission and scope reference](https://developers.cloudflare.com/fundamentals/api/how-to/create-via-api/) for how permissions combine into a token policy.
 
 {{ tffile .ExampleFile }}
 

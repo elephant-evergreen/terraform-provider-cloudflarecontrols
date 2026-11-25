@@ -4,6 +4,13 @@ A community Terraform provider for Workers and Durable Objects spending policies
 and Cloudflare account-owned API tokens. Use it alongside the [Cloudflare
 provider](https://registry.terraform.io/providers/cloudflare/cloudflare/latest/docs).
 
+## Why?
+
+Use the Cloudflare provider for zones, DNS, Workers, and the other account
+resources it covers. Add Cloudflare Account Controls for spending policies and
+for account tokens that this provider issues or adopts. Both providers can
+manage an account token, so keep each token under one provider.
+
 | I want to… | Start here |
 | --- | --- |
 | Set a spending threshold or import an existing policy | [Spend policy](docs/resources/spend_policy.md) |
